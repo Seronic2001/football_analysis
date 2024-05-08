@@ -1,0 +1,6 @@
+env/
+input_videos/
+output_videos/
+model/
+stubs/
+__pycache__
