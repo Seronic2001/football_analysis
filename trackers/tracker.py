@@ -10,9 +10,13 @@ sys.path.append('../')
 from utils import get_center_of_bbox, get_bbox_width, get_foot_position
 
 class Tracker:
-    def __init__(self, model_path):
+    def __init__(self, model_path, conf=0.1, batch_size=20, verbose=False, device=None):
         self.model = YOLO(model_path) 
         self.tracker = sv.ByteTrack()
+        self.conf = conf
+        self.batch_size = batch_size
+        self.verbose = verbose
+        self.device = device  # None = ultralytics auto (CUDA if present, else CPU)
 
     def add_position_to_tracks(sekf,tracks):
         for object, object_tracks in tracks.items():
@@ -38,10 +42,10 @@ class Tracker:
         return ball_positions
 
     def detect_frames(self, frames):
-        batch_size=20 
+        batch_size=self.batch_size 
         detections = [] 
         for i in range(0,len(frames),batch_size):
-            detections_batch = self.model.predict(frames[i:i+batch_size],conf=0.1)
+            detections_batch = self.model.predict(frames[i:i+batch_size],conf=self.conf,verbose=self.verbose,device=self.device)
             detections += detections_batch
         return detections
 
@@ -183,35 +187,37 @@ class Tracker:
 
         return frame
 
+    def annotate_frame(self,frame,tracks,team_ball_control,frame_num):
+        """All overlays for one frame. draw_annotations() maps this over frames;
+        the streaming pipeline calls it directly to avoid extra frame copies."""
+        frame = frame.copy()
+
+        player_dict = tracks["players"][frame_num]
+        ball_dict = tracks["ball"][frame_num]
+        referee_dict = tracks["referees"][frame_num]
+
+        # Draw Players
+        for track_id, player in player_dict.items():
+            color = player.get("team_color",(0,0,255))
+            frame = self.draw_ellipse(frame, player["bbox"],color, track_id)
+
+            if player.get('has_ball',False):
+                frame = self.draw_traingle(frame, player["bbox"],(0,0,255))
+
+        # Draw Referee
+        for _, referee in referee_dict.items():
+            frame = self.draw_ellipse(frame, referee["bbox"],(0,255,255))
+        
+        # Draw ball 
+        for track_id, ball in ball_dict.items():
+            frame = self.draw_traingle(frame, ball["bbox"],(0,255,0))
+
+
+        # Draw Team Ball Control
+        frame = self.draw_team_ball_control(frame, frame_num, team_ball_control)
+
+        return frame
+
     def draw_annotations(self,video_frames, tracks,team_ball_control):
-        output_video_frames= []
-        for frame_num, frame in enumerate(video_frames):
-            frame = frame.copy()
-
-            player_dict = tracks["players"][frame_num]
-            ball_dict = tracks["ball"][frame_num]
-            referee_dict = tracks["referees"][frame_num]
-
-            # Draw Players
-            for track_id, player in player_dict.items():
-                color = player.get("team_color",(0,0,255))
-                frame = self.draw_ellipse(frame, player["bbox"],color, track_id)
-
-                if player.get('has_ball',False):
-                    frame = self.draw_traingle(frame, player["bbox"],(0,0,255))
-
-            # Draw Referee
-            for _, referee in referee_dict.items():
-                frame = self.draw_ellipse(frame, referee["bbox"],(0,255,255))
-            
-            # Draw ball 
-            for track_id, ball in ball_dict.items():
-                frame = self.draw_traingle(frame, ball["bbox"],(0,255,0))
-
-
-            # Draw Team Ball Control
-            frame = self.draw_team_ball_control(frame, frame_num, team_ball_control)
-
-            output_video_frames.append(frame)
-
-        return output_video_frames
+        return [self.annotate_frame(frame, tracks, team_ball_control, frame_num)
+                for frame_num, frame in enumerate(video_frames)]

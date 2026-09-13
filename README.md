@@ -89,8 +89,10 @@ video frames
 
 ```
 football_analysis/
-├── app.py                    # Streamlit app (analysis + BEFORE/AFTER + stats)
-├── main.py                   # CLI batch pipeline (same stages, stub-cached)
+├── app.py                    # Streamlit app (analysis + BEFORE/AFTER + stats, disk-cached)
+├── main.py                   # CLI: thin argparse wrapper over pipeline.run
+├── pipeline.py               # Streaming low-RAM pipeline (shared by CLI + app)
+├── export_onnx.py            # Experimental ONNX export (opt-in, see Performance)
 ├── make_before_after.py      # BEFORE/AFTER side-by-side clip + poster
 ├── requirements.txt          # pip deps (local + Streamlit Cloud)
 ├── .streamlit/config.toml    # upload limit, theme
@@ -143,17 +145,17 @@ Upload a clip (or use the demo) → **Run analysis** → you get, in one pass:
 3. 📊 Ball-control metrics, per-player speed/distance table + chart, stats CSV
 
 Sidebar options: model path (or upload `best.pt`), detection confidence,
-clip-length cap (default 20 s — longer = slower), camera/speed toggles.
+compute device (auto/CPU/GPU), clip-length cap, camera/speed toggles.
+Re-running the same video + settings serves disk-cached results instantly.
 
 **2b. CLI batch run:**
 
 ```bash
-# put your clip at input_videos/08fd33_3.mp4 (or edit main.py paths),
-# put weights at model/best.pt, then:
-python main.py
-# → output_videos/output_video2.avi
+python main.py --input 08fd33_4.mp4 --model model/best.pt \
+  --out output_videos/output_video.mp4 --max-seconds 0
+# → output_videos/output_video.mp4 (+ stubs/ cache for fast re-runs)
 python make_before_after.py --input 08fd33_4.mp4 \
-  --analyzed output_videos/output_video2.avi \
+  --analyzed output_videos/output_video.mp4 \
   --out assets/before_after.mp4 --poster assets/before_after_poster.jpg \
   --max-seconds 10
 ```
@@ -203,6 +205,39 @@ Free-tier tips: keep clips ≤ 20 s (sidebar slider), prefer 720p uploads, leave
 * **Camera Movement X/Y** — per-frame optical-flow compensation (top-left).
 * **`xx km/h` / `yy m`** — per-player speed + cumulative distance under each ellipse.
 * **Stats tab (app)** — max/avg speed and distance per player ID + CSV download.
+
+---
+
+## ⚡ Performance (same model, same pixels — just cheaper)
+
+Measured on the demo clip, 250 frames @ 1080p (8-core CPU + GTX 1050):
+
+| | Before (in-RAM) | After (streaming) |
+|---|---|---|
+| Peak RAM | **~5.3 GB** | **~1.0 GB** (flat vs clip length) |
+| Wall time (GPU) | ~50 s | ~40–46 s |
+| App re-run, same settings | full recompute | **instant (disk cache)** |
+| Output pixels | — | bit-identical overlays (verified: mean frame diff ~1.0 = x264 rounding only) |
+
+How, without touching accuracy (same weights, same 640 imgsz, every frame):
+
+* **`pipeline.py`** — frames stream in batches; only track dicts (KBs) accumulate.
+  Drawing + H.264 encode fuse into one pass with a single frame copy
+  (was: 3 full-clip copies). Used by both `main.py` and `app.py`.
+* **Faster x264 preset** (`veryfast` + `zerolatency` tune) — encode was 18 s alone.
+* **Log spam off** (`verbose=False`), tunable `--conf/--batch-size/--device`.
+* **Deterministic teams** — fixed K-Means seeds, so runs are reproducible and cacheable.
+* **Stubs + app cache** — `stubs/` skips detection/camera on CLI re-runs;
+  the app hashes (video + weights + settings) and serves saved mp4s instantly.
+
+Honest negatives (measured, not assumed):
+
+* **ONNX CPU: ~2x slower than PyTorch CPU** for this model here
+  (~1.7 s vs ~0.8 s/frame; GPU does ~0.05 s) — `export_onnx.py` stays as
+  an opt-in experiment, nothing auto-uses it.
+* **OpenVINO: also slower** (0.9 s/frame CPU) — not wired in.
+* **Streamlit Cloud is CPU-only** (~0.8 s/frame detection): a 20 s clip takes
+  ~7 min there on first run — fine for a demo, and RAM stays safe now.
 
 ---
 

@@ -6,6 +6,9 @@ pipeline in one click, and get:
   2. BEFORE / AFTER side-by-side comparison clip (auto-generated after analysis)
   3. Match stats (ball control %, per-player speed & distance) + downloads
 
+The pipeline streams frames (never holds the whole clip in RAM) and caches
+results on disk, so re-runs with the same settings are instant.
+
 Run locally:
     pip install -r requirements.txt
     streamlit run app.py
@@ -16,25 +19,21 @@ Deploy to Streamlit Community Cloud:
     3. In the app sidebar, upload your `best.pt` OR set `MODEL_URL` secret to
        auto-download it at runtime. Then upload a clip and click Run.
 """
+import hashlib
 import os
+import pickle
+import shutil
 import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 import cv2
-import imageio.v2 as imageio
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from camera_movement_estimator import CameraMovementEstimator
-from make_before_after import make_comparison_frames, write_mp4_bgr
-from player_ball_assigner import PlayerBallAssigner
-from speed_and_distance_estimator import SpeedAndDistance_Estimator
-from team_assigner import TeamAssigner
-from trackers import Tracker
-from view_transformer import ViewTransformer
+import pipeline
 
 st.set_page_config(
     page_title="Football Analysis — YOLO Tracking + Stats",
@@ -45,6 +44,8 @@ st.set_page_config(
 DEMO_CANDIDATES = ["08fd33_4.mp4", "input_videos/08fd33_3.mp4", "assets/demo.mp4"]
 DEFAULT_MODEL = "model/best.pt"
 APP_DIR = Path(__file__).parent
+CACHE_DIR = Path(tempfile.gettempdir()) / "football_analysis_cache"
+CACHE_DIR.mkdir(exist_ok=True)
 
 
 def find_demo():
@@ -52,11 +53,6 @@ def find_demo():
         if (APP_DIR / c).exists():
             return str(APP_DIR / c)
     return None
-
-
-@st.cache_resource(show_spinner=False)
-def load_tracker(model_path: str):
-    return Tracker(model_path)
 
 
 def ensure_model(model_path: str) -> str:
@@ -73,107 +69,18 @@ def ensure_model(model_path: str) -> str:
     return model_path
 
 
-def read_frames_capped(path, max_frames=None):
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Could not open video: {path}")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-    frames = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
-        if max_frames and len(frames) >= max_frames:
-            break
-    cap.release()
-    return frames, float(fps)
+def file_key(path: str) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()[:16]
 
 
-def save_bgr_mp4(frames_bgr, path, fps=24.0):
-    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    with imageio.get_writer(path, fps=fps, codec="libx264", quality=8,
-                            macro_block_size=2) as w:
-        for f in frames_bgr:
-            w.append_data(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
-
-
-def run_pipeline(frames, model_path, progress_cb=None, enable_camera=True, enable_speed=True):
-    """Mirror main.py but stub-free (Streamlit-safe) and robust to empty frames."""
-    def cb(frac, msg):
-        if progress_cb:
-            progress_cb(frac, msg)
-
-    cb(0.05, "Loading YOLO model…")
-    tracker = load_tracker(model_path)
-
-    cb(0.15, "Detecting + tracking players / referees / ball…")
-    tracks = tracker.get_object_tracks(frames, read_from_stub=False, stub_path=None)
-    tracker.add_position_to_tracks(tracks)
-
-    if enable_camera:
-        cb(0.45, "Estimating camera movement (optical flow)…")
-        cme = CameraMovementEstimator(frames[0])
-        cam_move = cme.get_camera_movement(frames, read_from_stub=False, stub_path=None)
-        cme.add_adjust_positions_to_tracks(tracks, cam_move)
-    else:
-        cme, cam_move = None, [[0, 0]] * len(frames)
-        # still need position_adjusted for the view transformer
-        for obj, obj_tracks in tracks.items():
-            for fn, tr in enumerate(obj_tracks):
-                for tid, info in tr.items():
-                    info["position_adjusted"] = info.get("position")
-
-    cb(0.60, "Perspective transform → meters…")
-    vt = ViewTransformer()
-    vt.add_transformed_position_to_tracks(tracks)
-
-    tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
-
-    if enable_speed:
-        cb(0.68, "Computing speed & distance…")
-        sde = SpeedAndDistance_Estimator()
-        sde.add_speed_and_distance_to_tracks(tracks)
-    else:
-        sde = None
-
-    cb(0.75, "Assigning teams by shirt colour (K-Means)…")
-    ta = TeamAssigner()
-    if tracks["players"] and tracks["players"][0]:
-        ta.assign_team_color(frames[0], tracks["players"][0])
-        for fn, ptrack in enumerate(tracks["players"]):
-            for pid, tr in ptrack.items():
-                team = ta.get_player_team(frames[fn], tr["bbox"], pid)
-                tracks["players"][fn][pid]["team"] = team
-                tracks["players"][fn][pid]["team_color"] = ta.team_colors[team]
-    else:
-        st.warning("No players detected in frame 0 — team colours skipped. Try a lower confidence or a different clip.")
-
-    cb(0.85, "Assigning ball possession…")
-    pa = PlayerBallAssigner()
-    team_ball_control = []
-    for fn, ptrack in enumerate(tracks["players"]):
-        ball = tracks["ball"][fn].get(1, {})
-        if not ball or "bbox" not in ball:
-            team_ball_control.append(team_ball_control[-1] if team_ball_control else 0)
-            continue
-        assigned = pa.assign_ball_to_player(ptrack, ball["bbox"])
-        if assigned != -1:
-            tracks["players"][fn][assigned]["has_ball"] = True
-            team_ball_control.append(tracks["players"][fn][assigned].get("team", 0))
-        else:
-            team_ball_control.append(team_ball_control[-1] if team_ball_control else 0)
-    team_ball_control = np.array(team_ball_control)
-
-    cb(0.92, "Drawing annotations…")
-    out = tracker.draw_annotations(frames, tracks, team_ball_control)
-    if cme is not None:
-        out = cme.draw_camera_movement(out, cam_move)
-    if sde is not None:
-        out = sde.draw_speed_and_distance(out, tracks)
-
-    cb(1.0, "Done.")
-    return out, tracks, np.array(team_ball_control)
+def run_key(video_sig: str, model_path: str, conf, max_seconds, cam, spd, device) -> str:
+    stt = os.stat(model_path)
+    raw = f"{video_sig}|{model_path}|{stt.st_size}|{stt.st_mtime}|{conf}|{max_seconds}|{cam}|{spd}|{device}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
 def summarise(tracks, team_ball_control):
@@ -210,7 +117,14 @@ with st.sidebar:
     uploaded_model = st.file_uploader("…or upload best.pt", type=["pt"])
     conf = st.slider("Detection confidence", 0.05, 0.5, 0.1, 0.05)
     max_seconds = st.slider("Max clip length (s)", 5, 60, 20, 5,
-                            help="Longer clips = slower + more RAM. Trimmed from the start.")
+                            help="Trimmed from the start. RAM stays flat (streaming) — longer just takes longer.")
+    try:
+        import torch
+        has_cuda = torch.cuda.is_available()
+    except Exception:
+        has_cuda = False
+    device = st.selectbox("Compute device", ["auto"] + (["cuda", "cpu"] if has_cuda else ["cpu"]),
+                          help="Local GPU (if any) or CPU. Streamlit Cloud is CPU-only.")
     enable_camera = st.toggle("Camera-movement compensation", value=True)
     enable_speed = st.toggle("Speed / distance overlay", value=True)
     st.divider()
@@ -223,7 +137,7 @@ st.markdown("YOLO tracking → team assignment (K-Means) → ball possession →
 demo_path = find_demo()
 source = st.radio("Video source", ["Upload a clip", "Use demo clip"] if demo_path else ["Upload a clip"],
                   horizontal=True)
-input_path, fps_hint = None, 24.0
+input_path, video_sig = None, None
 
 if source == "Upload a clip":
     up = st.file_uploader("Upload match video (mp4/avi/mov)", type=["mp4", "avi", "mov", "mkv"])
@@ -231,8 +145,10 @@ if source == "Upload a clip":
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(up.name).suffix) as t:
             t.write(up.read())
             input_path = t.name
+        video_sig = file_key(input_path)
 else:
     input_path = demo_path
+    video_sig = file_key(demo_path)
     st.info(f"Using bundled demo: `{demo_path}` ({cv2.VideoCapture(demo_path).get(7):.0f} frames).")
 
 if input_path:
@@ -240,7 +156,6 @@ if input_path:
     run = st.button("🚀 Run analysis", type="primary", use_container_width=True)
 
     if run:
-        # Resolve model
         if uploaded_model:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as t:
                 t.write(uploaded_model.read())
@@ -253,46 +168,48 @@ if input_path:
                      f"`development_and_analysis/training/`, or set a `MODEL_URL` secret. See README → *Model weights*.")
             st.stop()
 
+        dev = None if device == "auto" else device
+        key = run_key(video_sig, model_path, conf, max_seconds, enable_camera, enable_speed, device)
+        cdir = CACHE_DIR / key
+        out_mp4, cmp_mp4 = str(cdir / "analyzed.mp4"), str(cdir / "before_after.mp4")
+        poster_path, tracks_path = str(cdir / "poster.jpg"), str(cdir / "tracks.pkl")
+
         try:
-            frames, fps = read_frames_capped(input_path, max_frames=int(max_seconds * 25))
-            st.caption(f"Loaded {len(frames)} frames @ {fps:.1f} fps (trimmed to first {max_seconds}s).")
-            if len(frames) < 5:
-                st.error("Could not read enough frames from this video.")
-                st.stop()
+            if (cdir / "DONE").exists():
+                st.info("⚡ Cache hit — same video + settings, serving saved results instantly.")
+                with open(tracks_path, "rb") as f:
+                    tracks, control = pickle.load(f)
+                n_frames = len(tracks["players"])
+                elapsed = 0.0
+            else:
+                shutil.rmtree(cdir, ignore_errors=True)
+                cdir.mkdir(parents=True, exist_ok=True)
+                bar = st.progress(0, text="Starting…")
 
-            bar = st.progress(0, text="Starting…")
-            def cb(frac, msg):
-                bar.progress(min(1.0, frac), text=msg)
+                def cb(frac, msg):
+                    bar.progress(min(1.0, frac), text=msg)
 
-            # apply confidence: Tracker hardcodes 0.1, so patch predict kwargs via model attribute
-            tracker_probe = load_tracker(model_path)
-            orig_detect = tracker_probe.detect_frames
-            def detect_with_conf(frames_in, _conf=conf):
-                batch, out = 20, []
-                for i in range(0, len(frames_in), batch):
-                    out += tracker_probe.model.predict(frames_in[i:i + batch], conf=_conf)
-                return out
-            tracker_probe.detect_frames = detect_with_conf
+                t0 = time.perf_counter()
+                r = pipeline.run(input_path, model_path, out_mp4, conf=conf,
+                                 max_seconds=max_seconds, enable_camera=enable_camera,
+                                 enable_speed=enable_speed, device=dev,
+                                 stub_dir=str(cdir / "stubs"), progress_cb=cb)
+                tracks, control, n_frames = r["tracks"], r["control"], r["n_frames"]
+                _, poster_ret, _ = pipeline.make_before_after_stream(
+                    input_path, out_mp4, cmp_mp4, poster_path,
+                    max_seconds=max_seconds)
+                with open(tracks_path, "wb") as f:
+                    pickle.dump((tracks, control), f)
+                (cdir / "DONE").touch()
+                elapsed = time.perf_counter() - t0
+                bar.empty()
 
-            try:
-                out_frames, tracks, control = run_pipeline(
-                    frames, model_path, progress_cb=cb,
-                    enable_camera=enable_camera, enable_speed=enable_speed)
-            finally:
-                tracker_probe.detect_frames = orig_detect
-
-            bar.empty()
-            tmp = Path(tempfile.mkdtemp())
-            out_mp4 = str(tmp / "analyzed.mp4")
-            cmp_mp4 = str(tmp / "before_after.mp4")
-            save_bgr_mp4(out_frames, out_mp4, fps=24.0)
-            n = min(len(frames), len(out_frames))
-            save_bgr_mp4(make_comparison_frames(frames[:n], out_frames[:n]), cmp_mp4, fps=24.0)
-            poster = np.hstack([frames[n // 2], out_frames[n // 2]])
-            _, poster_jpg = cv2.imencode(".jpg", poster)
             ctrl, df = summarise(tracks, control)
-
-            st.success(f"Done in one pass — {len(out_frames)} annotated frames.")
+            if elapsed:
+                st.success(f"Done — {n_frames} annotated frames in {elapsed:.0f}s "
+                           f"({n_frames / elapsed:.1f}× realtime). Re-runs are cached.")
+            else:
+                st.success(f"Done — {n_frames} annotated frames (from cache).")
             c1, c2 = st.columns(2)
             c1.metric("Team 1 ball control", f"{ctrl.get('Team 1', 0):.1f}%")
             c2.metric("Team 2 ball control", f"{ctrl.get('Team 2', 0):.1f}%")
@@ -313,8 +230,9 @@ if input_path:
                 st.download_button("⬇️ Download analyzed video (mp4)", f, "analyzed.mp4", "video/mp4")
             with open(cmp_mp4, "rb") as f:
                 st.download_button("⬇️ Download BEFORE/AFTER clip (mp4)", f, "before_after.mp4", "video/mp4")
-            st.download_button("⬇️ Download comparison poster (jpg)", poster_jpg.tobytes(),
-                               "before_after_poster.jpg", "image/jpeg")
+            with open(poster_path, "rb") as f:
+                st.download_button("⬇️ Download comparison poster (jpg)", f,
+                                   "before_after_poster.jpg", "image/jpeg")
         except Exception as e:
             st.exception(e)
             st.error("Analysis failed — most common cause is a COCO-pretrained model (e.g. yolov8n.pt) which lacks "

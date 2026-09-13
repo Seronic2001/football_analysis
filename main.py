@@ -1,86 +1,46 @@
-from utils import read_video, save_video
-from trackers import Tracker
-import cv2
-import numpy as np
-from team_assigner import TeamAssigner
-from player_ball_assigner import PlayerBallAssigner
-from camera_movement_estimator import CameraMovementEstimator
-from view_transformer import ViewTransformer
-from speed_and_distance_estimator import SpeedAndDistance_Estimator
+"""CLI entry: full football analysis via the streaming pipeline (low RAM).
+
+Example:
+    python main.py --input 08fd33_4.mp4 --model model/best.pt \
+        --out output_videos/output_video.mp4 --max-seconds 0
+    python make_before_after.py --input 08fd33_4.mp4 \
+        --analyzed output_videos/output_video.mp4
+"""
+import argparse
+import time
+
+import pipeline
 
 
 def main():
-    # Read Video
-    video_frames = read_video('input_videos/08fd33_3.mp4')
+    ap = argparse.ArgumentParser(description="Football analysis (streaming, low-RAM).")
+    ap.add_argument("--input", default="08fd33_4.mp4")
+    ap.add_argument("--model", default="model/best.pt")
+    ap.add_argument("--out", default="output_videos/output_video.mp4")
+    ap.add_argument("--conf", type=float, default=0.1)
+    ap.add_argument("--batch-size", type=int, default=20)
+    ap.add_argument("--max-seconds", type=float, default=0.0,
+                    help="Trim to first N seconds (0 = full video)")
+    ap.add_argument("--no-camera", action="store_true")
+    ap.add_argument("--no-speed", action="store_true")
+    ap.add_argument("--device", default=None,
+                    help="e.g. cpu, 0. Default: ultralytics auto (CUDA if present)")
+    ap.add_argument("--stub-dir", default="stubs")
+    args = ap.parse_args()
 
-    # Initialize Tracker
-    tracker = Tracker('model/best.pt')
+    t0 = time.perf_counter()
 
-    tracks = tracker.get_object_tracks(video_frames,
-                                       read_from_stub=True,
-                                       stub_path='stubs/track_stubs.pkl')
-    # Get object positions 
-    tracker.add_position_to_tracks(tracks)
+    def cb(frac, msg):
+        print(f"[{frac * 100:5.1f}%] {msg}", flush=True)
 
-    # camera movement estimator
-    camera_movement_estimator = CameraMovementEstimator(video_frames[0])
-    camera_movement_per_frame = camera_movement_estimator.get_camera_movement(video_frames,
-                                                                                read_from_stub=True,
-                                                                                stub_path='stubs/camera_movement_stub.pkl')
-    camera_movement_estimator.add_adjust_positions_to_tracks(tracks,camera_movement_per_frame)
+    r = pipeline.run(args.input, args.model, args.out, conf=args.conf,
+                     batch_size=args.batch_size, max_seconds=args.max_seconds,
+                     enable_camera=not args.no_camera, enable_speed=not args.no_speed,
+                     device=args.device, stub_dir=args.stub_dir, progress_cb=cb)
+    dt = time.perf_counter() - t0
+    print(f"Wrote {r['output_path']}  n={r['n_frames']}  "
+          f"Team1={r['team1_pct']:.1f}% Team2={r['team2_pct']:.1f}%  in {dt:.1f}s")
 
-    # View Trasnformer
-    view_transformer = ViewTransformer()
-    view_transformer.add_transformed_position_to_tracks(tracks)
-
-    # Interpolate Ball Positions
-    tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
-
-    # Speed and distance estimator
-    speed_and_distance_estimator = SpeedAndDistance_Estimator()
-    speed_and_distance_estimator.add_speed_and_distance_to_tracks(tracks)
-
-    # Assign Player Teams
-    team_assigner = TeamAssigner()
-    team_assigner.assign_team_color(video_frames[0], 
-                                    tracks['players'][0])
-    
-    for frame_num, player_track in enumerate(tracks['players']):
-        for player_id, track in player_track.items():
-            team = team_assigner.get_player_team(video_frames[frame_num],   
-                                                 track['bbox'],
-                                                 player_id)
-            tracks['players'][frame_num][player_id]['team'] = team 
-            tracks['players'][frame_num][player_id]['team_color'] = team_assigner.team_colors[team]
-
-    
-    # Assign Ball Aquisition
-    player_assigner =PlayerBallAssigner()
-    team_ball_control= []
-    for frame_num, player_track in enumerate(tracks['players']):
-        ball_bbox = tracks['ball'][frame_num][1]['bbox']
-        assigned_player = player_assigner.assign_ball_to_player(player_track, ball_bbox)
-
-        if assigned_player != -1:
-            tracks['players'][frame_num][assigned_player]['has_ball'] = True
-            team_ball_control.append(tracks['players'][frame_num][assigned_player]['team'])
-        else:
-            team_ball_control.append(team_ball_control[-1])
-    team_ball_control= np.array(team_ball_control)
-
-
-    # Draw output 
-    ## Draw object Tracks
-    output_video_frames = tracker.draw_annotations(video_frames, tracks,team_ball_control)
-
-    ## Draw Camera movement
-    output_video_frames = camera_movement_estimator.draw_camera_movement(output_video_frames,camera_movement_per_frame)
-
-    ## Draw Speed and Distance
-    speed_and_distance_estimator.draw_speed_and_distance(output_video_frames,tracks)
-
-    # Save video
-    save_video(output_video_frames, 'output_videos/output_video2.avi')
 
 if __name__ == '__main__':
     main()
