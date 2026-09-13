@@ -28,6 +28,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+import altair as alt
 import cv2
 import numpy as np
 import pandas as pd
@@ -222,8 +223,22 @@ if input_path:
 
             if not df.empty:
                 st.subheader("📊 Per-player speed & distance")
-                st.dataframe(df, use_container_width=True)
-                st.bar_chart(df.set_index("player_id")["distance_m"])
+                st.dataframe(df, use_container_width=True, hide_index=True,
+                             column_config={
+                                 "player_id": st.column_config.NumberColumn("Player ID"),
+                                 "team": st.column_config.NumberColumn("Team"),
+                                 "max_speed_kmh": st.column_config.NumberColumn("Max speed (km/h)"),
+                                 "avg_speed_kmh": st.column_config.NumberColumn("Avg speed (km/h)"),
+                                 "distance_m": st.column_config.NumberColumn("Distance (m)"),
+                             })
+                dist_chart = alt.Chart(df).mark_bar().encode(
+                    x=alt.X("player_id:O", title="Player ID"),
+                    y=alt.Y("distance_m:Q", title="Distance covered (m)"),
+                    color=alt.Color("team:N", title="Team"),
+                    tooltip=["player_id", "team", "max_speed_kmh",
+                             "avg_speed_kmh", "distance_m"],
+                ).properties(title="Distance covered per player", height=350)
+                st.altair_chart(dist_chart, use_container_width=True)
                 st.download_button("⬇️ Download stats (CSV)", df.to_csv(index=False), "player_stats.csv", "text/csv")
 
             with open(out_mp4, "rb") as f:
