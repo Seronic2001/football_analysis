@@ -3,4 +3,6 @@ input_videos/
 output_videos/
 model/
 stubs/
-__pycache__
+__pycache__/
+*.pt
+!assets/
