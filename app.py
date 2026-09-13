@@ -90,7 +90,7 @@ def summarise(tracks, team_ball_control):
         ctrl[f"Team {t}"] = float((valid == t).mean() * 100) if len(valid) else 0.0
     rows = []
     for pid in sorted({pid for f in tracks["players"] for pid in f}):
-        speeds, dists, team = [], 0.0, None
+        speeds, dists, team = [], [], None
         for f in tracks["players"]:
             if pid in f:
                 if "speed" in f[pid]:
