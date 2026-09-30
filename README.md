@@ -22,9 +22,9 @@ on the bundled demo (`08fd33_4.mp4`, first 10 s). Rendered with
 after every run. The AFTER side shows team-colour ellipses + IDs, the possession
 triangle, ball-control %, camera-movement readout and per-player `km/h + meters`.
 
-[![Before/after demo — click to open the video](assets/before_after_poster.jpg)](assets/before_after.mp4)
+[![Animated before/after demo — click to open the video](assets/before_after.gif)](assets/before_after.mp4)
 
-Click the poster to open or download the comparison video:
+The preview loops automatically. Click it to open or download the full-quality comparison video:
 [`assets/before_after.mp4`](assets/before_after.mp4).
 
 **Regenerate it yourself (after any analysis run):**
@@ -97,7 +97,8 @@ football_analysis/
 ├── .streamlit/config.toml    # upload limit, theme
 ├── 08fd33_4.mp4              # bundled demo clip (1920×1080, ~30 s)
 ├── assets/
-│   ├── before_after.mp4      # demo comparison clip (embedded above)
+│   ├── before_after.mp4      # full-quality demo clip (linked above)
+│   ├── before_after.gif      # animated README preview
 │   └── before_after_poster.jpg
 ├── trackers/  team_assigner/  player_ball_assigner/
 ├── camera_movement_estimator/  view_transformer/
