@@ -22,11 +22,10 @@ on the bundled demo (`08fd33_4.mp4`, first 10 s). Rendered with
 after every run. The AFTER side shows team-colour ellipses + IDs, the possession
 triangle, ball-control %, camera-movement readout and per-player `km/h + meters`.
 
-<video src="assets/before_after.mp4" controls width="100%" poster="assets/before_after_poster.jpg"></video>
+[![Before/after demo — click to open the video](assets/before_after_poster.jpg)](assets/before_after.mp4)
 
-> GitHub renders the player above. If it doesn't play, download
-> [`assets/before_after.mp4`](assets/before_after.mp4) or open the poster
-> [`assets/before_after_poster.jpg`](assets/before_after_poster.jpg).
+Click the poster to open or download the comparison video:
+[`assets/before_after.mp4`](assets/before_after.mp4).
 
 **Regenerate it yourself (after any analysis run):**
 
