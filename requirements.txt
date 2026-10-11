@@ -2,7 +2,7 @@
 # opencv-python-headless is used (no GUI libs needed, works on Cloud).
 streamlit>=1.36
 ultralytics>=8.2
-supervision>=0.22
+supervision>=0.22,<0.31   # sv.ByteTrack is removed in 0.31; its successor ships as a "trackers" package, which clashes with trackers/
 opencv-python-headless>=4.8
 numpy>=1.24
 pandas>=2.0
