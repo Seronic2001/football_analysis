@@ -88,7 +88,12 @@ pass 2 over the video (drawing)
 * `view_transformer/` — ⚠️ **calibrated to the demo camera angle.** For your own
   footage, update `pixel_vertices` in `view_transformer/view_transformer.py` to
   your pitch corners or speed/distance will be off. (Other resolutions of the
-  same angle are scaled automatically.)
+  same angle are scaled automatically.) The corners only fix the pitch plane:
+  positions anywhere on the pitch are mapped, not just inside them (checked
+  against the demo clip's markings — the penalty box 35 m outside the corners
+  lands within ~3%). Points off the pitch are dropped using `halfway_x`, the
+  halfway line's position in the calibrated coordinates; update it with the
+  corners.
 * `player_ball_assigner/` — 70 px foot-to-ball threshold (`max_player_ball_distance`).
 * `speed_and_distance_estimator/` — `frame_window=5`; frame rate is read from the clip.
 
@@ -226,6 +231,10 @@ Measured on the demo clip, 250 frames @ 1080p (8-core CPU + GTX 1050):
 | App re-run, same settings | full recompute | **instant (disk cache)** |
 | Output pixels | — | bit-identical overlays (verified: mean frame diff ~1.0 = x264 rounding only) |
 
+Current pipeline (two decodes, homography camera compensation), full demo clip,
+750 frames @ 1080p on the same machine: **~3 min** end-to-end with the BEFORE/AFTER
+clip, **~35–45 s** when the analysis stub is cached.
+
 How, without touching accuracy (same weights, same 640 imgsz, every frame):
 
 * **`pipeline.py`** — frames stream in batches; only track dicts (KBs) accumulate.
@@ -256,6 +265,13 @@ Honest negatives (measured, not assumed):
 * `ViewTransformer` pitch corners are hardcoded for the demo angle — recalibrate
   per stadium/camera, or auto-detect pitch lines.
 * Ball interpolation fills gaps linearly; long occlusions still drift.
+* Speed spikes when players overlap: a merged box moves the foot point, and on
+  the far side of the pitch a few pixels are several metres (one ~64 km/h
+  reading on the demo clip). A plausibility cap would hide these.
+* Camera compensation needs visible grass; a frame where no homography can be
+  fitted (close-ups, replays) is taken as no camera movement.
+* `supervision` is capped below 0.31, which removes `sv.ByteTrack`; its
+  successor ships as a `trackers` package, clashing with `trackers/` here.
 * Ideas: pass maps, heatmaps, formation detection, Streamlit caching of stubs,
   GPU flag, multi-match aggregation.
 
