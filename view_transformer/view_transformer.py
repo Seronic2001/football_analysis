@@ -25,15 +25,25 @@ class ViewTransformer():
 
         self.perspective_transformer = cv2.getPerspectiveTransform(self.pixel_vertices, self.target_vertices)
 
-    def transform_point(self,point):
-        p = (int(point[0]),int(point[1]))
-        is_inside = cv2.pointPolygonTest(self.pixel_vertices,p,False) >= 0 
-        if not is_inside:
-            return None
+        # The four corners only fix the pitch plane; the mapping holds beyond
+        # them (the penalty box 35 m outside lands within ~3% of its marked
+        # distance), so anything on the pitch is kept. The halfway line sits at
+        # x = 5.8 m, so the goal lines of a 105 m pitch are 52.5 m either side.
+        halfway_x, half_length, margin = 5.8, 52.5, 3.0
+        self.pitch_bounds = ((halfway_x-half_length-margin, halfway_x+half_length+margin),
+                             (-margin, court_width+margin))
 
-        reshaped_point = point.reshape(-1,1,2).astype(np.float32)
-        tranform_point = cv2.perspectiveTransform(reshaped_point,self.perspective_transformer)
-        return tranform_point.reshape(-1,2)
+    def transform_point(self,point):
+        """Pitch coordinates in metres, or None off the pitch (stands, or
+        above the horizon where the mapping flips)."""
+        x, y, w = self.perspective_transformer @ [point[0], point[1], 1.0]
+        if w <= 0:
+            return None
+        x, y = x/w, y/w
+        (x_min, x_max), (y_min, y_max) = self.pitch_bounds
+        if not (x_min <= x <= x_max and y_min <= y <= y_max):
+            return None
+        return np.array([[x, y]])
 
     def add_transformed_position_to_tracks(self,tracks):
         for object, object_tracks in tracks.items():

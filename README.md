@@ -2,7 +2,7 @@
 
 Detect and track **players, referees, goalkeepers and the ball** with YOLO + ByteTrack,
 assign players to teams by shirt colour (K-Means), measure **ball possession**,
-compensate **camera movement** (optical flow), convert pixels → meters
+compensate **camera movement** (pitch homography), convert pixels → meters
 (perspective transform), and report **per-player speed & distance** — then
 explore it all in an interactive **Streamlit app** that exports an annotated
 video, a BEFORE/AFTER comparison clip, and a stats CSV.
@@ -55,7 +55,7 @@ python make_before_after.py \
 | Player / referee / ball detection + tracking | YOLO (`model/best.pt`) + ByteTrack (`trackers/`), goalkeeper merged into player class, ball gaps interpolated |
 | Team assignment | K-Means on jersey pixels (`team_assigner/`) → Team 1 / Team 2 colours |
 | Ball possession | Nearest-player assignment (`player_ball_assigner/`) → per-team control % over time |
-| Camera-motion compensation | Lucas-Kanade optical flow (`camera_movement_estimator/`), accumulated so positions stay in first-frame coordinates |
+| Camera-motion compensation | Lucas-Kanade flow on grass features → RANSAC homography per frame (`camera_movement_estimator/`), chained so positions stay in first-frame coordinates |
 | Pixels → meters | Pitch-corner perspective transform (`view_transformer/`) |
 | Speed & distance | 5-frame window at the clip's own fps → km/h + cumulative meters (`speed_and_distance_estimator/`) |
 | One-click web UI | `app.py` — upload clip → watch progress → annotated mp4 + BEFORE/AFTER mp4 + stats table/CSV |
@@ -67,7 +67,7 @@ python make_before_after.py \
 ```
 pass 1 over the video (analysis)
   → Tracker (YOLO detect → ByteTrack)
-  → CameraMovementEstimator (optical flow, per-frame camera movement)
+  → CameraMovementEstimator (pitch-plane homography into frame 0, per frame)
   → TeamAssigner (K-Means shirt colours → team 1/2)
 then, on the tracks alone
   → camera-adjusted positions → ViewTransformer (pitch homography, px → meters)
@@ -81,8 +81,10 @@ pass 2 over the video (drawing)
 
 * `trackers/tracker.py` — detection, tracking, interpolation, all drawing.
 * `team_assigner/` — 2-stage K-Means (jersey vs background, then team A vs B).
-* `camera_movement_estimator/` — tracks pitch-edge features frame-to-frame
-  (median flow), summed over time to undo the pan.
+* `camera_movement_estimator/` — tracks grass features (stands, boards and
+  players masked out) frame-to-frame, fits a homography of the pitch plane and
+  chains them to undo pan, tilt and zoom. A pan rotates the image, so a single
+  translation (the stands move one way, the pitch the other) isn't enough.
 * `view_transformer/` — ⚠️ **calibrated to the demo camera angle.** For your own
   footage, update `pixel_vertices` in `view_transformer/view_transformer.py` to
   your pitch corners or speed/distance will be off. (Other resolutions of the
@@ -207,7 +209,7 @@ Free-tier tips: keep clips ≤ 20 s (sidebar slider), prefer 720p uploads, leave
 * **Ellipses + IDs** — player trackers, coloured by team; yellow = referee.
 * **Red triangle over player / green over ball** — current possession holder + ball.
 * **Team 1/2 Ball Control %** — cumulative share of possessed frames (bottom-right).
-* **Camera Movement X/Y** — per-frame optical-flow compensation (top-left).
+* **Camera Movement X/Y** — per-frame camera movement at the frame centre, in px (top-left).
 * **`xx km/h` / `yy m`** — per-player speed + cumulative distance under each ellipse.
 * **Stats tab (app)** — max/avg speed and distance per player ID + CSV download.
 

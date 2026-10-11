@@ -5,7 +5,7 @@ perspective transform, ball interpolation, speed/distance, possession.
 Frames are never all held in RAM, and the video is decoded only twice:
 
 * analysis pass — detection in batches, camera motion and team colours on the
-  same frames; only per-frame track dicts and motion vectors accumulate (KBs)
+  same frames; only per-frame track dicts and 3x3 camera matrices accumulate (KBs)
 * drawing pass — overlays + H.264 encode one frame at a time, and the
   BEFORE/AFTER comparison is written from the same frames
 
@@ -38,7 +38,8 @@ def analysis_stub_path(stub_dir, video_path, model_path, conf, max_frames, enabl
     for p in (video_path, model_path):
         st = os.stat(p)
         parts += [os.path.abspath(p), st.st_size, st.st_mtime]
-    parts += [conf, max_frames, enable_camera]
+    # Bump when the stub's contents change shape, so old caches aren't loaded
+    parts += [conf, max_frames, enable_camera, "v2"]
     sig = hashlib.sha1("|".join(map(str, parts)).encode()).hexdigest()[:12]
     return os.path.join(stub_dir, f"analysis_{sig}.pkl")
 
@@ -48,9 +49,9 @@ def analyze(video_path, model_path, conf=0.1, batch_size=20, verbose=False,
             stub_path=None, progress_cb=None):
     """Single decode pass: detect + ByteTrack, camera motion, team colours.
 
-    Returns (tracks, camera_movement). tracks is {"players"|"referees"|"ball":
-    [per-frame {track_id: info}]}; camera_movement is one [x, y] per frame
-    (zeros when enable_camera is off).
+    Returns (tracks, camera). tracks is {"players"|"referees"|"ball":
+    [per-frame {track_id: info}]}; camera is one 3x3 homography per frame
+    mapping it into first-frame coordinates (identity when enable_camera is off).
     """
     if stub_path and os.path.exists(stub_path):
         with open(stub_path, 'rb') as f:
@@ -63,7 +64,7 @@ def analyze(video_path, model_path, conf=0.1, batch_size=20, verbose=False,
     team_assigner = TeamAssigner()
     cme = None
     tracks = {"players": [], "referees": [], "ball": []}
-    camera_movement = []
+    camera = []
 
     for batch in iter_batches(video_path, batch_size, max_frames):
         for frame, (players, referees, ball) in zip(batch, tracker.track_batch(batch)):
@@ -71,13 +72,14 @@ def analyze(video_path, model_path, conf=0.1, batch_size=20, verbose=False,
             tracks["referees"].append(referees)
             tracks["ball"].append(ball)
 
+            boxes = [t["bbox"] for objs in (players, referees, ball) for t in objs.values()]
             if not enable_camera:
-                camera_movement.append([0.0, 0.0])
+                camera.append(np.eye(3))
             elif cme is None:
-                cme = CameraMovementEstimator(frame)
-                camera_movement.append([0.0, 0.0])
+                cme = CameraMovementEstimator(frame, boxes)
+                camera.append(np.eye(3))
             else:
-                camera_movement.append(cme.update(frame))
+                camera.append(cme.update(frame, boxes))
 
             # Team colours are fitted on the first frame showing two or more
             # players; each player is then classified where they first appear.
@@ -89,7 +91,7 @@ def analyze(video_path, model_path, conf=0.1, batch_size=20, verbose=False,
                     track["team"] = team
                     track["team_color"] = team_assigner.team_colors[team]
 
-            done = len(camera_movement)
+            done = len(camera)
             if progress_cb and done % 25 == 0:
                 frac = min(1.0, done / total_frames) if total_frames else 0.0
                 progress_cb(0.02 + 0.48 * frac, f"Detecting + tracking… {done} frames")
@@ -98,8 +100,8 @@ def analyze(video_path, model_path, conf=0.1, batch_size=20, verbose=False,
     if stub_path:
         os.makedirs(os.path.dirname(os.path.abspath(stub_path)), exist_ok=True)
         with open(stub_path, 'wb') as f:
-            pickle.dump((tracks, camera_movement), f)
-    return tracks, camera_movement
+            pickle.dump((tracks, camera), f)
+    return tracks, camera
 
 
 def assign_possession(tracks):
@@ -162,6 +164,7 @@ def run(input_path, model_path, output_path, conf=0.1, batch_size=20,
 
     cb(0.55, "Perspective transform…")
     CameraMovementEstimator.add_adjust_positions_to_tracks(tracks, cam)
+    cam_readout = CameraMovementEstimator.per_frame_movement(cam, (width or 1920, height or 1080))
     ViewTransformer(width or 1920, height or 1080).add_transformed_position_to_tracks(tracks)
     tracks["ball"] = interpolate_ball_positions(tracks["ball"])
 
@@ -187,7 +190,7 @@ def run(input_path, model_path, output_path, conf=0.1, batch_size=20,
                 before = labelled_half(frame, "BEFORE", compare_width, half_h)
             annotate_frame(frame, tracks, share[fn], fn)
             if enable_camera:
-                CameraMovementEstimator.overlay_frame(frame, cam[fn])
+                CameraMovementEstimator.overlay_frame(frame, cam_readout[fn])
             if sde is not None:
                 sde.overlay_frame(frame, tracks, fn)
             writer.append_data(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
