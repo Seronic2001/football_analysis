@@ -16,7 +16,7 @@ from ultralytics import YOLO
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Export best.pt to ONNX (CPU fast path).")
+    ap = argparse.ArgumentParser(description="Export best.pt to ONNX (experimental, opt-in).")
     ap.add_argument("--model", default="model/best.pt")
     ap.add_argument("--out", default="model/best.onnx")
     ap.add_argument("--imgsz", type=int, default=640,
@@ -35,7 +35,7 @@ def main():
     if os.path.abspath(exported) != os.path.abspath(args.out):
         os.replace(exported, args.out)
     print(f"Exported: {args.out}")
-    print("pipeline will now prefer it automatically over best.pt")
+    print(f"Not used automatically: pass --model {args.out} to main.py to benchmark it")
     return args.out
 
 

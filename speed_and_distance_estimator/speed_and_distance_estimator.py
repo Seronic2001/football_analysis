@@ -1,12 +1,10 @@
 import cv2
-import sys 
-sys.path.append('../')
 from utils import measure_distance ,get_foot_position
 
 class SpeedAndDistance_Estimator():
-    def __init__(self):
+    def __init__(self,frame_rate=24):
         self.frame_window=5
-        self.frame_rate=24
+        self.frame_rate=frame_rate
     
     def add_speed_and_distance_to_tracks(self,tracks):
         total_distance= {}
@@ -17,6 +15,8 @@ class SpeedAndDistance_Estimator():
             number_of_frames = len(object_tracks)
             for frame_num in range(0,number_of_frames, self.frame_window):
                 last_frame = min(frame_num+self.frame_window,number_of_frames-1 )
+                if last_frame == frame_num:
+                    continue
 
                 for track_id,_ in object_tracks[frame_num].items():
                     if track_id not in object_tracks[last_frame]:
@@ -48,7 +48,7 @@ class SpeedAndDistance_Estimator():
                         tracks[object][frame_num_batch][track_id]['distance'] = total_distance[object][track_id]
     
     def overlay_frame(self,frame,tracks,frame_num):
-        """One-frame speed/distance labels. draw_speed_and_distance() maps this."""
+        """Draw one frame's speed/distance labels in place."""
         for object, object_tracks in tracks.items():
             if object == "ball" or object == "referees":
                 continue 
@@ -68,10 +68,3 @@ class SpeedAndDistance_Estimator():
                    cv2.putText(frame, f"{speed:.2f} km/h",position,cv2.FONT_HERSHEY_SIMPLEX,0.5,(0,0,0),2)
                    cv2.putText(frame, f"{distance:.2f} m",(position[0],position[1]+20),cv2.FONT_HERSHEY_SIMPLEX,0.5,(0,0,0),2)
         return frame
-
-    def draw_speed_and_distance(self,frames,tracks):
-        output_frames = []
-        for frame_num, frame in enumerate(frames):
-            output_frames.append(self.overlay_frame(frame,tracks,frame_num))
-        
-        return output_frames

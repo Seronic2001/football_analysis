@@ -2,9 +2,8 @@
 
 Example:
     python main.py --input 08fd33_4.mp4 --model model/best.pt \
-        --out output_videos/output_video.mp4 --max-seconds 0
-    python make_before_after.py --input 08fd33_4.mp4 \
-        --analyzed output_videos/output_video.mp4
+        --out output_videos/output_video.mp4 --max-seconds 0 \
+        --compare assets/before_after.mp4 --poster assets/before_after_poster.jpg
 """
 import argparse
 import time
@@ -26,6 +25,12 @@ def main():
     ap.add_argument("--device", default=None,
                     help="e.g. cpu, 0. Default: ultralytics auto (CUDA if present)")
     ap.add_argument("--stub-dir", default="stubs")
+    ap.add_argument("--compare", default=None,
+                    help="Also write a BEFORE/AFTER side-by-side clip to this mp4")
+    ap.add_argument("--poster", default=None,
+                    help="Also write the comparison's middle frame to this jpg")
+    ap.add_argument("--compare-width", type=int, default=640,
+                    help="Width of each half of the comparison")
     args = ap.parse_args()
 
     t0 = time.perf_counter()
@@ -36,7 +41,9 @@ def main():
     r = pipeline.run(args.input, args.model, args.out, conf=args.conf,
                      batch_size=args.batch_size, max_seconds=args.max_seconds,
                      enable_camera=not args.no_camera, enable_speed=not args.no_speed,
-                     device=args.device, stub_dir=args.stub_dir, progress_cb=cb)
+                     device=args.device, stub_dir=args.stub_dir, progress_cb=cb,
+                     compare_path=args.compare, poster_path=args.poster,
+                     compare_width=args.compare_width)
     dt = time.perf_counter() - t0
     print(f"Wrote {r['output_path']}  n={r['n_frames']}  "
           f"Team1={r['team1_pct']:.1f}% Team2={r['team2_pct']:.1f}%  in {dt:.1f}s")
